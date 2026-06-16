@@ -1,0 +1,15 @@
+name = "office-police"
+main = "worker/index.js"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Cron triggers — replaces node-cron
+# Tuesday 10:00 UTC and Friday 17:00 UTC
+[triggers]
+crons = ["0 10 * * 2", "0 17 * * 5"]
+
+# D1 database binding — replaces SQLite
+[[d1_databases]]
+binding = "DB"
+database_name = "office-police-db"
+database_id = "8f3b7b0e-75cb-4b41-b0f0-06f5460c4384"
