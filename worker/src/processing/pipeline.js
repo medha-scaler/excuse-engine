@@ -1,9 +1,11 @@
 /**
- * ETL Pipeline — Workers version. All functions are async, accept env/db as args.
+ * ETL Pipeline — Workers version.
+ * Resolves user display names from Slack API before storing.
  */
 
 import { classify } from './classifier.js';
 import { insertEvent, isDuplicate } from '../storage/db.js';
+import { getUserName } from '../slack/poster.js';
 
 export function extract(event, channelId) {
   return {
@@ -15,15 +17,19 @@ export function extract(event, channelId) {
   };
 }
 
-export async function runPipeline(event, db, geminiApiKey, channelId, alertFn = null) {
+export async function runPipeline(event, db, geminiApiKey, channelId, alertFn = null, botToken = null) {
   const raw = extract(event, channelId);
+
+  // Resolve display name from Slack API if not already present
+  if (!raw.user_name && raw.user_id && botToken) {
+    raw.user_name = await getUserName(raw.user_id, botToken) ?? raw.user_id;
+  }
 
   const { is_attendance, event_type, reason, sentiment } = await classify(raw.message_text, geminiApiKey, alertFn);
   if (!is_attendance) return null;
 
   const transformed = { ...raw, is_attendance, event_type, reason, sentiment };
 
-  // Skip duplicates (important for backfill safety)
   if (await isDuplicate(db, raw.user_id, raw.timestamp)) return null;
 
   const result = await insertEvent(db, transformed);

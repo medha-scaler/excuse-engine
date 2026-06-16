@@ -1,38 +1,77 @@
 /**
- * Snarky Job — Workers version.
- * Tries Gemini first, falls back to hardcoded templates on rate limit/error.
+ * Snarky Job — Gemini-generated comment after every attendance event.
+ * Passes the user's full history to Gemini so comments feel earned and specific.
+ * Falls back to a small set of neutral templates only on rate limit / API failure.
  */
 
-import {
-  getUserWeekdayCount,
-  getUserReasons,
-  getLeaderboard,
-  getUserStreak,
-} from '../storage/db.js';
+import { getRecentUserEvents, getLeaderboard, getUserWeekdayCount, getUserReasons } from '../storage/db.js';
 import { postMessage } from '../slack/poster.js';
 
 const FIRE_PROBABILITY = 0.3;
 
-// ── Gemini snarky comment ─────────────────────────────────────────────────────
+// ── Build rich user context for Gemini ───────────────────────────────────────
 
-async function generateGeminiComment(event, patternContext, geminiApiKey) {
+async function buildUserContext(userId, db) {
+  const recentEvents = await getRecentUserEvents(db, userId, 20);
+  const leaderboard  = await getLeaderboard(db, 10);
+  const reasons      = await getUserReasons(db, userId);
+  const mondayCount  = (await getUserWeekdayCount(db, userId, 1)).count;
+  const fridayCount  = (await getUserWeekdayCount(db, userId, 5)).count;
+
+  const rank = leaderboard.findIndex((u) => u.user_id === userId) + 1;
+  const totalEvents = leaderboard.find((u) => u.user_id === userId)?.excuse_count ?? recentEvents.length;
+
+  const eventSummary = recentEvents
+    .slice(0, 10)
+    .map((e) => `${e.event_type}${e.reason ? ` (${e.reason})` : ''} on ${new Date(e.timestamp).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`)
+    .join(', ');
+
+  const topReasons = reasons.slice(0, 3).map((r) => `"${r.reason}" x${r.count}`).join(', ');
+
+  return {
+    totalEvents,
+    rank: rank > 0 ? rank : null,
+    leaderboardSize: leaderboard.length,
+    eventSummary: eventSummary || 'no prior events',
+    topReasons: topReasons || 'none',
+    mondayCount,
+    fridayCount,
+  };
+}
+
+// ── Gemini comment generation ─────────────────────────────────────────────────
+
+async function generateGeminiComment(event, context, geminiApiKey) {
   if (!geminiApiKey) return null;
 
-  const systemInstruction = `You are Office Police, a sarcastic workplace Slack bot.
-Generate a single short snarky comment (1-2 sentences max) reacting to someone's attendance update.
-Rules:
-- Address the user by their Slack mention format: <@USER_ID>
-- Be dry, witty, and observational — never mean-spirited or offensive
-- Reference their specific reason or pattern if provided
-- Keep it under 25 words
-- No hashtags, no emojis unless they add punch
-- Output ONLY the comment, nothing else`;
+  const { user_id, user_name, event_type, reason } = event;
+  const name = user_name ?? `<@${user_id}>`;
 
-  const userPrompt = `User <@${event.user_id}> (${event.user_name ?? 'someone'}) just posted an attendance update.
-Event type: ${event.event_type}
-Reason given: ${event.reason ?? 'none'}
-${patternContext ? `Known pattern: ${patternContext}` : ''}
-Write one snarky Office Police comment.`;
+  const systemInstruction = `You are Office Police, a sharp and witty workplace Slack bot.
+You just detected an attendance event and want to drop a sarcastic one-liner in the channel.
+
+Rules:
+- One or two sentences MAX. Under 30 words total.
+- Always mention the user as <@${user_id}>
+- Be specific — reference their actual history, reasons, or patterns if interesting
+- Dry wit, never cruel. Punch at the behaviour, not the person.
+- Vary your style: sometimes deadpan, sometimes faux-concerned, sometimes bureaucratic, sometimes conspiratorial
+- Do NOT start with "Ah," or "Well," — be more creative
+- Output ONLY the comment. Nothing else.`;
+
+  const userPrompt = `
+User: <@${user_id}> (${name})
+Today's event: ${event_type}${reason ? ` — reason: "${reason}"` : ' — no reason given'}
+
+Their history:
+- Total attendance events logged: ${context.totalEvents}
+- Leaderboard rank: ${context.rank ? `#${context.rank} out of ${context.leaderboardSize}` : 'not ranked yet'}
+- Recent events: ${context.eventSummary}
+- Most repeated reasons: ${context.topReasons}
+- Times absent on a Monday: ${context.mondayCount}
+- Times absent on a Friday: ${context.fridayCount}
+
+Write one snarky Office Police comment reacting to this.`.trim();
 
   try {
     const response = await fetch(
@@ -43,78 +82,36 @@ Write one snarky Office Police comment.`;
         body: JSON.stringify({
           system_instruction: { parts: [{ text: systemInstruction }] },
           contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-          generationConfig: { maxOutputTokens: 60, temperature: 0.95 },
+          generationConfig: { maxOutputTokens: 80, temperature: 1.0 },
         }),
       }
     );
 
     const data = await response.json();
-
-    // Rate limit or quota error — fall through silently
     if (!response.ok || data.error) {
-      console.log(`[snarkyJob] Gemini unavailable: ${data.error?.message?.slice(0, 60) ?? response.status}`);
+      console.log(`[snarkyJob] Gemini unavailable (${data.error?.code ?? response.status}), using fallback`);
       return null;
     }
 
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
     return text || null;
   } catch (err) {
-    console.log(`[snarkyJob] Gemini fetch failed: ${err.message.slice(0, 60)}`);
+    console.log(`[snarkyJob] Gemini fetch failed: ${err.message.slice(0, 80)}`);
     return null;
   }
 }
 
-// ── Pattern detection ─────────────────────────────────────────────────────────
-
-async function buildPatternContext(userId, db) {
-  const mondayRow = await getUserWeekdayCount(db, userId, 1);
-  if (mondayRow.count >= 3) return `absent on ${mondayRow.count} Mondays total`;
-
-  const fridayRow = await getUserWeekdayCount(db, userId, 5);
-  if (fridayRow.count >= 3) return `absent on ${fridayRow.count} Fridays total`;
-
-  const reasons = await getUserReasons(db, userId);
-  if (reasons.length > 0 && reasons[0].count >= 3) return `repeated "${reasons[0].reason}" ${reasons[0].count} times`;
-
-  const streak = await getUserStreak(db, userId);
-  if (streak >= 3) return `${streak} consecutive days of attendance events`;
-
-  const leaderboard = await getLeaderboard(db, 1);
-  if (leaderboard.length > 0 && leaderboard[0].user_id === userId && leaderboard[0].excuse_count >= 5) {
-    return `leads the leaderboard with ${leaderboard[0].excuse_count} events`;
-  }
-
-  return null;
-}
-
-// ── Hardcoded fallback templates ──────────────────────────────────────────────
+// ── Minimal fallback templates — only used on API failure ─────────────────────
+// Intentionally generic so they don't feel fake or patterned.
 
 const FALLBACK_TEMPLATES = [
-  (u) => `<@${u}> checking in. Attendance noted. Eyebrow raised.`,
-  (u) => `Office Police has logged <@${u}>'s latest update. The file grows thicker.`,
-  (u) => `<@${u}>'s excuse has been catalogued for the weekly review. Sleep well.`,
-  (u) => `Another entry for <@${u}>. The spreadsheet never forgets.`,
-  (u) => `<@${u}> — bold move. Let's see how this ages by Friday.`,
-  (u) => `Attendance this week is starting to resemble a post-apocalyptic movie. <@${u}> just confirmed their role.`,
-  (u) => `<@${u}> has filed their report. Office Police is watching. Always watching.`,
-  (u) => `<@${u}> remains committed to the bit.`,
-  (u) => `Noted, <@${u}>. The dossier thickens.`,
-  (u) => `<@${u}> and the office remain in a complicated relationship.`,
-  (u) => `<@${u}> — consistency is a virtue. So is showing up, but here we are.`,
-  (u) => `Office Police acknowledges <@${u}>'s contribution to this week's statistics.`,
-  (u) => `<@${u}> has once again demonstrated creative work-life balance.`,
-  (u) => `Adding <@${u}> to today's incident report.`,
-  (u) => `<@${u}> — the office chair remains cold.`,
-  (u) => `<@${u}> working from home. The commute to the kitchen must be brutal.`,
-  (u) => `<@${u}>'s home office productivity is unverified but assumed optimistic.`,
-  (u) => `<@${u}> is WFH. Office Police has dispatched a remote surveillance drone.`,
-  (u) => `<@${u}> sick again. Office Police wishes a speedy recovery and demands a doctor's note.`,
-  (u) => `<@${u}> running late. The office clocked in without them.`,
-  (u) => `<@${u}> discovers new reasons to be elsewhere. Impressive range.`,
-  (u) => `<@${u}>'s relationship with the office is best described as 'it's complicated'.`,
-  (u) => `<@${u}> — absence makes the heart grow fonder, apparently.`,
-  (u) => `Office Police logs <@${u}> and moves on. For now.`,
-  (u) => `<@${u}> — the pattern is becoming a lifestyle.`,
+  (u) => `<@${u}> — logged. Office Police never forgets.`,
+  (u) => `Attendance event filed for <@${u}>. The record grows.`,
+  (u) => `<@${u}> has been noted. That's all.`,
+  (u) => `<@${u}> — duly recorded. See you in the Friday report.`,
+  (u) => `Office Police acknowledges <@${u}>. Eyes remain open.`,
+  (u) => `<@${u}> — present in spirit, absent in person.`,
+  (u) => `<@${u}>'s file has been updated. Carry on.`,
 ];
 
 // ── Main export ───────────────────────────────────────────────────────────────
@@ -123,22 +120,14 @@ export async function maybeSnarky(event, channelId, db, botToken, geminiApiKey) 
   if (!channelId) return;
   if (Math.random() > FIRE_PROBABILITY) return;
 
-  const { user_id } = event;
-  const patternContext = await buildPatternContext(user_id, db);
-
-  // Try Gemini first
-  let comment = await generateGeminiComment(event, patternContext, geminiApiKey);
-
-  // Fall back to templates
-  if (!comment) {
-    const pick = FALLBACK_TEMPLATES[Math.floor(Math.random() * FALLBACK_TEMPLATES.length)];
-    comment = pick(user_id);
-  }
+  const context = await buildUserContext(event.user_id, db);
+  const comment = await generateGeminiComment(event, context, geminiApiKey)
+    ?? FALLBACK_TEMPLATES[Math.floor(Math.random() * FALLBACK_TEMPLATES.length)](event.user_id);
 
   try {
     await postMessage(channelId, comment, botToken);
-    console.log(`[snarkyJob] Posted comment for <@${user_id}>`);
+    console.log(`[snarkyJob] Posted for <@${event.user_id}>`);
   } catch (err) {
-    console.error('[snarkyJob] Failed to post comment:', err.message);
+    console.error('[snarkyJob] Post failed:', err.message);
   }
 }
