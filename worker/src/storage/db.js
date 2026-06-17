@@ -220,12 +220,31 @@ export async function getMyStats(db, userId) {
     events = results;
   }
 
+  // Longest consecutive-day streak across all their events
+  let streak = 0;
+  if (events.length > 0) {
+    const days = [...new Set(
+      events.map(e => {
+        const d = new Date(e.timestamp);
+        return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      })
+    )].sort();
+    let cur = 1, best = 1;
+    for (let i = 1; i < days.length; i++) {
+      const diff = (new Date(days[i]) - new Date(days[i-1])) / 86400000;
+      cur = diff === 1 ? cur + 1 : 1;
+      if (cur > best) best = cur;
+    }
+    streak = best;
+  }
+
   return {
     events,
     displayName: myRow?.user_name ?? userId,
     total: myRow?.total ?? 0,
     rank,
     totalPeople: leaderboard.length,
+    streak,
     wfh:         myRow?.wfh         ?? 0,
     sick:        myRow?.sick        ?? 0,
     ooo:         myRow?.ooo         ?? 0,

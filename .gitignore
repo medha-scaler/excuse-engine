@@ -2,4 +2,7 @@ node_modules/
 .env
 data/*.db
 *.db
+*.db-shm
+*.db-wal
 .wrangler/
+backfill.mjs

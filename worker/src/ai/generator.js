@@ -1,5 +1,5 @@
 /**
- * AI Generator — Workers version. Uses fetch() directly (no SDK needed).
+ * AI Generator — uses Claude Haiku 4.5 (cheap + creative).
  */
 
 const FRIDAY_SYSTEM_PROMPT = `You are Office Police, a sarcastic but funny workplace analytics bot for a Slack workspace.
@@ -66,32 +66,38 @@ Monday patterns: ${mondayLines}
 Individual details: ${userDetails || '(no activity)'}`;
 }
 
-async function callGemini(systemPrompt, userPrompt, geminiApiKey, maxTokens = 800) {
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-        generationConfig: { maxOutputTokens: maxTokens, temperature: 0.85 },
-      }),
-    }
-  );
+async function callClaude(systemPrompt, userPrompt, anthropicApiKey, maxTokens = 800) {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': anthropicApiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: maxTokens,
+      temperature: 1.0,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    }),
+  });
 
   const data = await response.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-  if (!text) throw new Error('Gemini returned empty response');
+  if (!response.ok || data.error) {
+    throw new Error(`Claude API error: ${data.error?.message ?? response.status}`);
+  }
+  const text = data.content?.[0]?.text?.trim();
+  if (!text) throw new Error('Claude returned empty response');
   return text;
 }
 
-export async function generateWeeklyRoast(stats, geminiApiKey) {
+export async function generateWeeklyRoast(stats, anthropicApiKey) {
   const payload = buildStatsPayload(stats);
-  return callGemini(FRIDAY_SYSTEM_PROMPT, `${payload}\n\nWrite the Friday weekly roast.`, geminiApiKey, 800);
+  return callClaude(FRIDAY_SYSTEM_PROMPT, `${payload}\n\nWrite the Friday weekly roast.`, anthropicApiKey, 800);
 }
 
-export async function generateMidweekCheckin(stats, geminiApiKey) {
+export async function generateMidweekCheckin(stats, anthropicApiKey) {
   const payload = buildStatsPayload(stats);
-  return callGemini(TUESDAY_SYSTEM_PROMPT, `${payload}\n\nIt's Tuesday. Write the midweek check-in.`, geminiApiKey, 300);
+  return callClaude(TUESDAY_SYSTEM_PROMPT, `${payload}\n\nIt's Tuesday. Write the midweek check-in.`, anthropicApiKey, 300);
 }

@@ -1,6 +1,5 @@
 /**
- * Classifier — Gemini NLP. Same logic as src/processing/classifier.js
- * but uses env bindings instead of process.env.
+ * Classifier — Claude Haiku 4.5 NLP for real-time event classification.
  */
 
 const PRE_FILTER_SIGNALS = [
@@ -45,7 +44,7 @@ is_attendance: true if attendance-related, false otherwise.
 Respond ONLY with valid JSON. No markdown, no explanation.
 Example: {"is_attendance": true, "event_type": "wfh", "reason": "plumber coming", "sentiment": "neutral"}`;
 
-export async function classify(text, geminiApiKey, alertFn = null) {
+export async function classify(text, anthropicApiKey, alertFn = null) {
   if (!text || !text.trim()) {
     return { is_attendance: false, event_type: null, reason: null, sentiment: null };
   }
@@ -55,31 +54,32 @@ export async function classify(text, geminiApiKey, alertFn = null) {
   }
 
   try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
-          contents: [{ role: 'user', parts: [{ text: `Classify this Slack message:\n"${text}"` }] }],
-          generationConfig: { maxOutputTokens: 100, temperature: 0 },
-        }),
-      }
-    );
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': anthropicApiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 100,
+        temperature: 0,
+        system: SYSTEM_INSTRUCTION,
+        messages: [{ role: 'user', content: `Classify this Slack message:\n"${text}"` }],
+      }),
+    });
 
     const data = await response.json();
 
-    // Detect rate limit specifically
-    if (data.error) {
-      const isRateLimit = data.error.code === 429 || data.error.message?.includes('Quota');
-      const alertType = isRateLimit ? 'GEMINI_RATE_LIMIT' : 'GEMINI_ERROR';
-      console.error(`[classifier] ${alertType}: ${data.error.message}`);
-      if (alertFn) await alertFn(alertType, data.error.message);
+    if (!response.ok || data.error) {
+      const msg = data.error?.message ?? `HTTP ${response.status}`;
+      console.error(`[classifier] Claude error: ${msg}`);
+      if (alertFn) await alertFn('CLAUDE_ERROR', msg);
       return { is_attendance: true, event_type: 'unknown', reason: null, sentiment: 'neutral' };
     }
 
-    const raw = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
+    const raw = data.content?.[0]?.text?.trim() ?? '';
     const clean = raw.replace(/^```json\s*/i, '').replace(/```$/, '').trim();
     const parsed = JSON.parse(clean);
 
@@ -90,8 +90,8 @@ export async function classify(text, geminiApiKey, alertFn = null) {
       sentiment: parsed.sentiment ?? 'neutral',
     };
   } catch (err) {
-    console.error('[classifier] Gemini error:', err.message);
-    if (alertFn) await alertFn('GEMINI_ERROR', err.message);
+    console.error('[classifier] Claude error:', err.message);
+    if (alertFn) await alertFn('CLAUDE_ERROR', err.message);
     return { is_attendance: true, event_type: 'unknown', reason: null, sentiment: 'neutral' };
   }
 }

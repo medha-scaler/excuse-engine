@@ -116,16 +116,17 @@ export default {
       // Use waitUntil to process async without blocking the response.
       // Build a bound alert function so subsystems don't need to carry env around
       const alert = (type, message, extra) =>
-        sendAlert(type, message, env.SLACK_BOT_TOKEN, env.SLACK_CHANNEL_ID, extra);
+        sendAlert(type, message, env.SLACK_BOT_TOKEN, env.SLACK_CHANNEL_ID, extra, env.SLACK_ALERT_USER_ID);
 
       ctx.waitUntil(
         (async () => {
           try {
             await initSchema(env.DB);
-            const result = await runPipeline(event, env.DB, env.GEMINI_API_KEY, env.SLACK_CHANNEL_ID, alert, env.SLACK_BOT_TOKEN);
+            const result = await runPipeline(event, env.DB, env.ANTHROPIC_API_KEY, env.SLACK_CHANNEL_ID, alert, env.SLACK_BOT_TOKEN);
             if (result) {
               console.log(`[worker] Ingested — user: ${result.transformed.user_id}, type: ${result.transformed.event_type}`);
-              await maybeSnarky(result.transformed, env.SLACK_CHANNEL_ID, env.DB, env.SLACK_BOT_TOKEN, env.GEMINI_API_KEY);
+              const p = parseFloat(env.SNARKY_PROBABILITY ?? '0.3');
+              await maybeSnarky(result.transformed, env.SLACK_CHANNEL_ID, env.DB, env.SLACK_BOT_TOKEN, env.ANTHROPIC_API_KEY, isNaN(p) ? 0.3 : p);
             }
           } catch (err) {
             console.error('[worker] Pipeline error:', err.message);
@@ -160,7 +161,7 @@ export default {
           await postRoast(channelId, "It's Tuesday. Zero attendance events so far. Either everyone is working, or they've gotten better at hiding. Office Police is watching either way.", env.SLACK_BOT_TOKEN, 'tuesday');
           return;
         }
-        const text = await generateMidweekCheckin(stats, env.GEMINI_API_KEY);
+        const text = await generateMidweekCheckin(stats, env.ANTHROPIC_API_KEY);
         await insertRoast(env.DB, { week_start: weekStart, week_end: weekEnd, roast_text: text, channel_id: channelId });
         await postRoast(channelId, text, env.SLACK_BOT_TOKEN, 'tuesday');
         console.log('[worker] Tuesday check-in posted');
@@ -172,7 +173,7 @@ export default {
           await postRoast(channelId, "Week's over. Zero documented excuses. Office Police is filing this under 'suspicious'. See you Monday — if you show up.", env.SLACK_BOT_TOKEN, 'friday');
           return;
         }
-        const text = await generateWeeklyRoast(stats, env.GEMINI_API_KEY);
+        const text = await generateWeeklyRoast(stats, env.ANTHROPIC_API_KEY);
         await insertRoast(env.DB, { week_start: weekStart, week_end: weekEnd, roast_text: text, channel_id: channelId });
         await postRoast(channelId, text, env.SLACK_BOT_TOKEN, 'friday');
         console.log('[worker] Friday roast posted');

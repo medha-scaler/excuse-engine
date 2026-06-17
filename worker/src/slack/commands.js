@@ -92,7 +92,7 @@ export async function handleLeaderboardFull(db) {
 // ── /mystats ──────────────────────────────────────────────────────────────────
 
 export async function handleMyStats(db, userId, userName) {
-  const { events, displayName, total, rank, totalPeople, wfh, sick, ooo, travel, late, early_leave, family } = await getMyStats(db, userId);
+  const { events, displayName, total, rank, totalPeople, streak, wfh, sick, ooo, travel, late, early_leave, family } = await getMyStats(db, userId);
 
   if (total === 0) {
     return ephemeral("You have zero attendance events logged. Either you're the most dedicated person here, or the bot missed something. Either way — impressive.");
@@ -134,6 +134,7 @@ export async function handleMyStats(db, userId, userName) {
       fields: [
         { type: 'mrkdwn', text: `*Total events logged*\n${total}` },
         { type: 'mrkdwn', text: `*Leaderboard rank*\n${rank > 0 ? `#${rank} of ${totalPeople}` : 'Unranked'}` },
+        { type: 'mrkdwn', text: `*Longest streak*\n${streak} consecutive day${streak !== 1 ? 's' : ''}` },
         { type: 'mrkdwn', text: `*Monday absences*\n${mondayCount} time${mondayCount !== 1 ? 's' : ''}` },
         { type: 'mrkdwn', text: `*Friday absences*\n${fridayCount} time${fridayCount !== 1 ? 's' : ''}` },
       ],

@@ -20,8 +20,10 @@ export async function postMessage(channelId, text, botToken) {
 
 export async function postRoast(channelId, roastText, botToken, type = 'friday') {
   const header = type === 'tuesday'
-    ? '🚔 Office Police Midweek Check-In'
-    : '🚔 Office Police Weekly Roast';
+    ? '🚔 Office Police — Midweek Check-In'
+    : type === 'monthly'
+    ? '🚔 Office Police — Monthly Report'
+    : '🚔 Office Police — Weekly Roast';
 
   const MAX_BLOCK_LEN = 2900;
   const chunks = [];

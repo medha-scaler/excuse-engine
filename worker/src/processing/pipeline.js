@@ -17,7 +17,7 @@ export function extract(event, channelId) {
   };
 }
 
-export async function runPipeline(event, db, geminiApiKey, channelId, alertFn = null, botToken = null) {
+export async function runPipeline(event, db, anthropicApiKey, channelId, alertFn = null, botToken = null) {
   const raw = extract(event, channelId);
 
   // Resolve display name from Slack API if not already present
@@ -25,7 +25,7 @@ export async function runPipeline(event, db, geminiApiKey, channelId, alertFn = 
     raw.user_name = await getUserName(raw.user_id, botToken) ?? raw.user_id;
   }
 
-  const { is_attendance, event_type, reason, sentiment } = await classify(raw.message_text, geminiApiKey, alertFn);
+  const { is_attendance, event_type, reason, sentiment } = await classify(raw.message_text, anthropicApiKey, alertFn);
   if (!is_attendance) return null;
 
   const transformed = { ...raw, is_attendance, event_type, reason, sentiment };

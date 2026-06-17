@@ -6,7 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 # Cron triggers — replaces node-cron
 # Tuesday 10:00 UTC and Friday 17:00 UTC
 [triggers]
-crons = ["0 10 * * 2", "0 17 * * 5"]
+crons = ["0 10 * * 2", "0 17 * * 5", "0 9 L * *"]
 
 # D1 database binding — replaces SQLite
 [[d1_databases]]
