@@ -15,11 +15,14 @@ export async function initSchema(db) {
       reason      TEXT,
       sentiment   TEXT,
       timestamp   INTEGER,
+      leave_date  TEXT,
+      days        REAL DEFAULT 1.0,
       created_at  TEXT DEFAULT CURRENT_TIMESTAMP
     )`,
     `CREATE INDEX IF NOT EXISTS idx_ae_user_id    ON attendance_events (user_id)`,
     `CREATE INDEX IF NOT EXISTS idx_ae_event_type ON attendance_events (event_type)`,
     `CREATE INDEX IF NOT EXISTS idx_ae_timestamp  ON attendance_events (timestamp)`,
+    `CREATE INDEX IF NOT EXISTS idx_ae_leave_date ON attendance_events (leave_date)`,
     `CREATE TABLE IF NOT EXISTS weekly_roasts (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
       week_start TEXT,
@@ -38,6 +41,14 @@ export async function initSchema(db) {
 
   for (const sql of statements) {
     await db.prepare(sql).run();
+  }
+
+  // Add new columns to existing DBs — ignore error if they already exist
+  for (const sql of [
+    'ALTER TABLE attendance_events ADD COLUMN leave_date TEXT',
+    'ALTER TABLE attendance_events ADD COLUMN days REAL DEFAULT 1.0',
+  ]) {
+    try { await db.prepare(sql).run(); } catch { /* already exists */ }
   }
 }
 
@@ -89,11 +100,12 @@ export async function seedAliases(db) {
 export async function insertEvent(db, record) {
   return db.prepare(`
     INSERT INTO attendance_events
-      (user_id, user_name, channel_id, message_text, event_type, reason, sentiment, timestamp)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (user_id, user_name, channel_id, message_text, event_type, reason, sentiment, timestamp, leave_date, days)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     record.user_id, record.user_name, record.channel_id, record.message_text,
-    record.event_type, record.reason, record.sentiment, record.timestamp
+    record.event_type, record.reason, record.sentiment, record.timestamp,
+    record.leave_date ?? null, record.days ?? 1.0
   ).run();
 }
 
