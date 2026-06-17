@@ -9,8 +9,8 @@
 import { verifySlackSignature } from './src/slack/verify.js';
 import { runPipeline } from './src/processing/pipeline.js';
 import { maybeSnarky } from './src/jobs/snarkyJob.js';
-import { buildWeeklySummary, currentWeekWindow } from './src/analytics/aggregator.js';
-import { generateWeeklyRoast, generateMidweekCheckin } from './src/ai/generator.js';
+import { buildWeeklySummary, buildMonthlySummary, currentWeekWindow, currentMonthWindow } from './src/analytics/aggregator.js';
+import { generateWeeklyRoast, generateMidweekCheckin, generateMonthlyReport } from './src/ai/generator.js';
 import { postRoast } from './src/slack/poster.js';
 import { insertRoast, initSchema, seedAliases } from './src/storage/db.js';
 import { passesCheapFilter } from './src/processing/classifier.js';
@@ -153,12 +153,11 @@ export default {
       sendAlert(type, message, env.SLACK_BOT_TOKEN, channelId, extra);
 
     try {
-      const stats = await buildWeeklySummary(env.DB, weekStart, weekEnd);
-
       // Tuesday 10:00 — midweek check-in
       if (cronExpr === '0 10 * * 2') {
+        const stats = await buildWeeklySummary(env.DB, weekStart, weekEnd);
         if (stats.totalEvents === 0) {
-          await postRoast(channelId, "It's Tuesday. Zero attendance events so far. Either everyone is working, or they've gotten better at hiding. Office Police is watching either way.", env.SLACK_BOT_TOKEN, 'tuesday');
+          await postRoast(channelId, "It's Tuesday. Zero attendance events so far. Either everyone is working hard, or they've gotten better at hiding. Office Police is watching either way.", env.SLACK_BOT_TOKEN, 'tuesday');
           return;
         }
         const text = await generateMidweekCheckin(stats, env.ANTHROPIC_API_KEY);
@@ -169,6 +168,7 @@ export default {
 
       // Friday 17:00 — full weekly roast
       if (cronExpr === '0 17 * * 5') {
+        const stats = await buildWeeklySummary(env.DB, weekStart, weekEnd);
         if (stats.totalEvents === 0) {
           await postRoast(channelId, "Week's over. Zero documented excuses. Office Police is filing this under 'suspicious'. See you Monday — if you show up.", env.SLACK_BOT_TOKEN, 'friday');
           return;
@@ -177,6 +177,25 @@ export default {
         await insertRoast(env.DB, { week_start: weekStart, week_end: weekEnd, roast_text: text, channel_id: channelId });
         await postRoast(channelId, text, env.SLACK_BOT_TOKEN, 'friday');
         console.log('[worker] Friday roast posted');
+      }
+
+      // Last day of month 09:00 — monthly report (covers current month)
+      if (cronExpr === '0 9 L * *') {
+        const { monthStart, monthEnd, monthLabel } = currentMonthWindow();
+        const stats = await buildMonthlySummary(env.DB, monthStart, monthEnd, monthLabel);
+        if (stats.totalEvents === 0) {
+          await postRoast(channelId, `${monthLabel} report: zero events logged. Office Police has no comment. That is the comment.`, env.SLACK_BOT_TOKEN, 'monthly');
+          return;
+        }
+        // Build manager mention string from known IDs — shown in CC line of report
+        const managerMentions = [
+          env.MANAGER_NAMAN_ID   ? `<@${env.MANAGER_NAMAN_ID}>`   : 'Naman',
+          env.MANAGER_TAUSEEF_ID ? `<@${env.MANAGER_TAUSEEF_ID}>` : 'Tauseef',
+        ].join(', ');
+        const text = await generateMonthlyReport(stats, env.ANTHROPIC_API_KEY, managerMentions);
+        await insertRoast(env.DB, { week_start: monthStart, week_end: monthEnd, roast_text: text, channel_id: channelId });
+        await postRoast(channelId, text, env.SLACK_BOT_TOKEN, 'monthly');
+        console.log('[worker] Monthly report posted');
       }
     } catch (err) {
       console.error('[worker] Cron job error:', err.message);
