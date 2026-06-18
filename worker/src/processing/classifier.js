@@ -12,12 +12,14 @@ const PRE_FILTER_SIGNALS = [
   'not coming', "won't be", 'wont be', 'not in', 'out today',
   'half day', 'taking the day', 'on leave', 'holiday', 'vacation',
   'working from', 'from home', 'stepping out', 'heading out',
-  'stuck', 'running late', 'be late', 'early', 'leaving',
+  'stuck', 'running late', 'be late', 'early', 'leaving early', 'leave early',
   'absent', 'away', 'outstation', 'out of town',
   'personal reason', 'personal work', 'personal emergency', 'personal commitment',
   'continue working', 'continue my work', 'will work', 'working remotely',
   'go somewhere', 'going somewhere', 'have to go', 'need to go',
   'not at office', 'not in office', 'outside', 'not available',
+  'unavailable', 'signing off', 'logging off', 'drop off', 'wrap up early',
+  "won't be available", 'wont be available', 'stepping away', 'heading home',
   '🏠', '🤒', '😷', '✈️', '🚗', '🏥', '🛏️', '🌡️',
 ];
 
@@ -33,6 +35,8 @@ Classify a message and extract every individual leave date mentioned.
 Rules:
 - is_attendance: true for ANY message where someone is not coming to office, working remotely, leaving early, coming late, or away for any reason — even if phrased indirectly like "have to go somewhere but will continue working" or "personal reason, working remotely"
 - If someone says they will "continue working" or "work from somewhere else" — that is WFH (is_attendance: true, event_type: wfh)
+- If someone says they are leaving early, signing off early, heading home early, or won't be available after a certain time — that is early_leave
+- If someone says they are running late, will be late, or delayed coming in — that is late
 - Only set is_attendance: false for messages that are clearly NOT about attendance (announcements, questions, greetings, admin messages)
 - If no specific dates are mentioned, return a single event with leave_date: null (assume today)
 - If multiple dates are mentioned, return one object per date

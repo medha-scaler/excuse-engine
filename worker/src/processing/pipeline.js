@@ -14,6 +14,7 @@ export function extract(event, channelId) {
     channel_id: event.channel ?? channelId ?? null,
     message_text: event.text ?? '',
     timestamp: event.ts ? Math.round(parseFloat(event.ts) * 1000) : Date.now(),
+    slack_ts: event.ts ?? null,
   };
 }
 

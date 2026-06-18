@@ -14,30 +14,33 @@ async function generateClaudeComment(event, context, anthropicApiKey) {
   const name = user_name ?? `<@${user_id}>`;
 
   const system = `You are Office Police, a sharp and witty workplace Slack bot.
-You just detected an attendance event and want to drop a sarcastic one-liner in the channel.
+You just detected an attendance event and want to drop a sarcastic comment in the channel.
 
 Rules:
-- One or two sentences MAX. Under 30 words total.
+- One or two sentences MAX. Under 35 words total.
 - Always mention the user as <@${user_id}>
-- Be specific — reference their actual history, reasons, or patterns if interesting
-- Dry wit, never cruel. Punch at the behaviour, not the person.
-- Vary your style: sometimes deadpan, sometimes faux-concerned, sometimes bureaucratic, sometimes conspiratorial
-- Do NOT start with "Ah," or "Well," — be more creative
-- Match the tone to the event: WFH gets couch-potato energy, sick gets faux-sympathy, OOO gets FOMO vibes, late gets mild suspicion, travel gets wanderlust sarcasm, family gets wholesome-but-suspicious
+- PRIORITISE their history — if they have a pattern, call it out specifically. Examples:
+  - "another WFH" → "<@U> back on the couch. That's 3 this week alone."
+  - Monday sick day pattern → "Curious how the illness always strikes on Mondays."
+  - High streak → "X days running. Office Police is taking notes."
+  - High total → "Event #12 for <@U>. We should name a category after them."
+- If no strong pattern yet, react to the event type with dry wit
+- Dry wit, never cruel. Punch at behaviour, not the person.
+- Vary your style: deadpan, faux-concerned, bureaucratic, conspiratorial — never the same twice
+- Do NOT start with "Ah," or "Well,"
 - Output ONLY the comment. Nothing else.`;
 
   const userPrompt = `User: <@${user_id}> (${name})
-Today's event: ${event_type}${reason ? ` — reason: "${reason}"` : ' — no reason given'}
+Today's event: ${event_type}${reason ? ` — reason: "${reason}"` : ''}
 
 Their history:
-- Total attendance events logged: ${context.total}
-- Leaderboard rank: ${context.rank ? `#${context.rank} out of ${context.totalPeople}` : 'not ranked yet'}
-- Longest streak: ${context.streak} consecutive leave day(s)
-- Times absent on a Monday: ${context.mondayCount}
-- Times absent on a Friday: ${context.fridayCount}
-- Top reasons: ${context.topReasons}
+- This is their #${context.total} attendance event total
+- Leaderboard rank: ${context.rank ? `#${context.rank} out of ${context.totalPeople}` : 'unranked'}
+- Longest streak: ${context.streak} consecutive leave days
+- Monday absences: ${context.mondayCount} | Friday absences: ${context.fridayCount}
+- Top reasons given: ${context.topReasons}
 
-Write one snarky Office Police comment reacting to this.`;
+Write one snarky Office Police comment. If they have a pattern, call it out directly.`;
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -126,6 +129,59 @@ const DEFAULT_FALLBACKS = [
   (u) => `Noted, <@${u}>. The record grows.`,
 ];
 
+const ZOHO_FALLBACKS = [
+  (u) => `_<@${u}> — Zoho People won't update itself. Just saying. 📋_`,
+  (u) => `_Reminder: <@${u}>, mark this on Zoho People before someone asks. 📋_`,
+  (u) => `_<@${u}> — Office Police files reports. Zoho needs yours. 📋_`,
+  (u) => `_Don't forget Zoho People, <@${u}>. The paper trail matters. 📋_`,
+  (u) => `_<@${u}> — attendance logged here, but Zoho People needs to know too. 📋_`,
+];
+
+async function generateZohoReminder(event, context, anthropicApiKey) {
+  if (!anthropicApiKey) return null;
+  const { user_id, event_type } = event;
+
+  const system = `You are Office Police reminding someone to log their leave on Zoho People (the company HR system).
+Write a single short italic reminder, under 20 words.
+Always mention the user as <@${user_id}> and reference Zoho People by name.
+Vary the tone based on their history — first-timers get a gentle nudge, repeat offenders get mild exasperation.
+Be dry and brief. Wrap the whole thing in Slack italics using underscores: _reminder here_
+Output ONLY the reminder. No quotes, no explanation.`;
+
+  const userPrompt = `User: <@${user_id}>
+Event type: ${event_type}
+Total events logged before this: ${context.total}
+This is their ${context.total === 1 ? '1st' : context.total === 2 ? '2nd' : context.total === 3 ? '3rd' : context.total + 'th'} attendance event.
+Write the Zoho People reminder.`;
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': anthropicApiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 60,
+        temperature: 1.0,
+        system,
+        messages: [{ role: 'user', content: userPrompt }],
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok || data.error) return null;
+    return data.content?.[0]?.text?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function getZohoFallback(userId) {
+  return ZOHO_FALLBACKS[Math.floor(Math.random() * ZOHO_FALLBACKS.length)](userId);
+}
+
 function getFallback(userId, eventType) {
   const pool = FALLBACK_TEMPLATES[eventType] ?? DEFAULT_FALLBACKS;
   return pool[Math.floor(Math.random() * pool.length)](userId);
@@ -133,7 +189,6 @@ function getFallback(userId, eventType) {
 
 export async function maybeSnarky(event, channelId, db, botToken, anthropicApiKey, fireProbability = 0.3) {
   if (!channelId) return;
-  if (Math.random() > fireProbability) return;
 
   const stats = await getMyStats(db, event.user_id);
   const mondayCount = stats.events.filter(e => new Date(e.timestamp).getDay() === 1).length;
@@ -158,12 +213,25 @@ export async function maybeSnarky(event, channelId, db, botToken, anthropicApiKe
     topReasons,
   };
 
-  const comment = await generateClaudeComment(event, context, anthropicApiKey)
-    ?? getFallback(event.user_id, event.event_type);
+  // thread_ts: reply in the same thread as the original message
+  const threadTs = event.thread_ts ?? event.slack_ts ?? null;
 
   try {
-    await postMessage(channelId, comment, botToken);
-    console.log(`[snarkyJob] Posted for <@${event.user_id}>`);
+    // Snarky comment fires at configurable probability
+    if (Math.random() <= fireProbability) {
+      const comment = await generateClaudeComment(event, context, anthropicApiKey)
+        ?? getFallback(event.user_id, event.event_type);
+      await postMessage(channelId, comment, botToken, threadTs);
+      console.log(`[snarkyJob] Snarky posted for <@${event.user_id}>`);
+    }
+
+    // Zoho reminder only for actual leaves (not WFH or late — no Zoho entry needed), 40% chance
+    const ZOHO_EVENT_TYPES = ['ooo', 'sick', 'early_leave', 'travel', 'family'];
+    if (ZOHO_EVENT_TYPES.includes(event.event_type) && Math.random() <= 0.4) {
+      const zohoText = await generateZohoReminder(event, context, anthropicApiKey)
+        ?? getZohoFallback(event.user_id);
+      await postMessage(channelId, zohoText, botToken, threadTs);
+    }
   } catch (err) {
     console.error('[snarkyJob] Post failed:', err.message);
   }

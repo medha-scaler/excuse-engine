@@ -14,9 +14,12 @@ async function slackPost(endpoint, botToken, body) {
   return response.json();
 }
 
-export async function postMessage(channelId, text, botToken) {
-  return slackPost('chat.postMessage', botToken, { channel: channelId, text });
+export async function postMessage(channelId, text, botToken, threadTs = null) {
+  const body = { channel: channelId, text };
+  if (threadTs) body.thread_ts = threadTs;
+  return slackPost('chat.postMessage', botToken, body);
 }
+
 
 export async function postRoast(channelId, roastText, botToken, type = 'friday') {
   const header = type === 'tuesday'
