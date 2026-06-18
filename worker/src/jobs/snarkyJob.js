@@ -7,40 +7,58 @@
 import { getMyStats } from '../storage/db.js';
 import { postMessage } from '../slack/poster.js';
 
-async function generateClaudeComment(event, context, anthropicApiKey) {
+const SERIOUS_KEYWORDS = ['high fever', 'fever', 'hospitalized', 'hospital', 'surgery', 'accident',
+  'emergency', 'death', 'passed away', 'funeral', 'bereavement', 'critical', 'icu', 'serious'];
+
+function checkIsSerious(event) {
+  const reasonLower = (event.reason ?? '').toLowerCase();
+  const textLower = (event.message_text ?? '').toLowerCase();
+  return SERIOUS_KEYWORDS.some(k => reasonLower.includes(k) || textLower.includes(k));
+}
+
+async function generateClaudeComment(event, context, anthropicApiKey, isSerious) {
   if (!anthropicApiKey) return null;
 
   const { user_id, user_name, event_type, reason } = event;
   const name = user_name ?? `<@${user_id}>`;
 
-  const system = `You are Office Police, a sharp and witty workplace Slack bot.
-You just detected an attendance event and want to drop a sarcastic comment in the channel.
+  const isFirstTimer = context.total <= 2;
+  const isHabitual = context.total >= 8;
+
+  const toneGuide = isSerious && isFirstTimer
+    ? `TONE: Warm and genuinely caring. This person rarely takes leave AND is seriously unwell. Say something kind — "get well soon", wish them a quick recovery. No sarcasm at all.`
+    : isSerious && isHabitual
+    ? `TONE: Mildly concerned but knowing. They're unwell but they have a long history. You can be warm but allow yourself a tiny dry aside about their record — something like "get well soon... you know the drill by now." Keep it human, not cruel.`
+    : isSerious
+    ? `TONE: Warm and decent. Genuine illness — keep it kind. A simple "get well soon" with maybe one gentle line. No roasting.`
+    : isFirstTimer
+    ? `TONE: Light and welcoming. This is one of their first events — don't slam them. Mild observation, friendly tone.`
+    : isHabitual
+    ? `TONE: Full snarky mode. This person is a seasoned veteran of the absence game. Call out their patterns directly and humorously. They can take it.`
+    : `TONE: Dry wit, balanced. Comment on their event or mild patterns if any.`;
+
+  const system = `You are Office Police — part workplace bot, part attendance warden, part reluctant colleague.
+You genuinely care about the team but you ALSO track every absence religiously.
+Drop a short comment reacting to this attendance event.
+
+${toneGuide}
 
 Rules:
-- One or two sentences MAX. Under 35 words total.
+- One or two sentences MAX. Under 35 words.
 - Always mention the user as <@${user_id}>
-- PRIORITISE their history — if they have a pattern, call it out specifically. Examples:
-  - "another WFH" → "<@U> back on the couch. That's 3 this week alone."
-  - Monday sick day pattern → "Curious how the illness always strikes on Mondays."
-  - High streak → "X days running. Office Police is taking notes."
-  - High total → "Event #12 for <@U>. We should name a category after them."
-- If no strong pattern yet, react to the event type with dry wit
-- Dry wit, never cruel. Punch at behaviour, not the person.
-- Vary your style: deadpan, faux-concerned, bureaucratic, conspiratorial — never the same twice
+- Reference specific history if available (streak, Monday pattern, total count, repeated reasons)
+- Vary style: deadpan, faux-concerned, bureaucratic, conspiratorial — never the same twice
 - Do NOT start with "Ah," or "Well,"
 - Output ONLY the comment. Nothing else.`;
 
   const userPrompt = `User: <@${user_id}> (${name})
-Today's event: ${event_type}${reason ? ` — reason: "${reason}"` : ''}
+Event: ${event_type}${reason ? ` — "${reason}"` : ''}
+Total events on record: ${context.total}
+Rank: ${context.rank ? `#${context.rank} of ${context.totalPeople}` : 'unranked'}
+Longest streak: ${context.streak} days | Monday absences: ${context.mondayCount} | Friday absences: ${context.fridayCount}
+Top reasons: ${context.topReasons}
 
-Their history:
-- This is their #${context.total} attendance event total
-- Leaderboard rank: ${context.rank ? `#${context.rank} out of ${context.totalPeople}` : 'unranked'}
-- Longest streak: ${context.streak} consecutive leave days
-- Monday absences: ${context.mondayCount} | Friday absences: ${context.fridayCount}
-- Top reasons given: ${context.topReasons}
-
-Write one snarky Office Police comment. If they have a pattern, call it out directly.`;
+Write the comment.`;
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -182,7 +200,14 @@ function getZohoFallback(userId) {
   return ZOHO_FALLBACKS[Math.floor(Math.random() * ZOHO_FALLBACKS.length)](userId);
 }
 
-function getFallback(userId, eventType) {
+const SERIOUS_FALLBACKS = [
+  (u) => `Get well soon, <@${u}>. Take care of yourself first.`,
+  (u) => `<@${u}> — rest up. The office will still be here when you're back.`,
+  (u) => `Hope you feel better soon, <@${u}>. Health first, always.`,
+];
+
+function getFallback(userId, eventType, serious = false) {
+  if (serious) return SERIOUS_FALLBACKS[Math.floor(Math.random() * SERIOUS_FALLBACKS.length)](userId);
   const pool = FALLBACK_TEMPLATES[eventType] ?? DEFAULT_FALLBACKS;
   return pool[Math.floor(Math.random() * pool.length)](userId);
 }
@@ -215,12 +240,13 @@ export async function maybeSnarky(event, channelId, db, botToken, anthropicApiKe
 
   // thread_ts: reply in the same thread as the original message
   const threadTs = event.thread_ts ?? event.slack_ts ?? null;
+  const isSerious = checkIsSerious(event);
 
   try {
     // Snarky comment fires at configurable probability
     if (Math.random() <= fireProbability) {
-      const comment = await generateClaudeComment(event, context, anthropicApiKey)
-        ?? getFallback(event.user_id, event.event_type);
+      const comment = await generateClaudeComment(event, context, anthropicApiKey, isSerious)
+        ?? getFallback(event.user_id, event.event_type, isSerious);
       await postMessage(channelId, comment, botToken, threadTs);
       console.log(`[snarkyJob] Snarky posted for <@${event.user_id}>`);
     }
